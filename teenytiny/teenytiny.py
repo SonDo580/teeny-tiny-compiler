@@ -1,4 +1,4 @@
-from lex import Lexer
+from lexer import Lexer
 from teenytiny_token import TokenType
 
 
