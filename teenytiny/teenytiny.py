@@ -1,7 +1,8 @@
 import sys
+
 from lexer import Lexer
 from parser import Parser
-
+from emitter import Emitter
 
 def main():
     print("Teeny Tiny Compiler")
@@ -19,10 +20,12 @@ def main():
         sys.exit(f"Error reading file {file_path}: {e}")
 
     lexer = Lexer(source)
-    parser = Parser(lexer)
+    emitter = Emitter("out.c")
+    parser = Parser(lexer, emitter)
 
     parser.program()
-    print("Parsing complete")
+    emitter.write_file()
+    print("Compiling completed.")
     
 if __name__ == "__main__":
     main()

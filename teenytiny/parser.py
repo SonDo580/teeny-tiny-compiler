@@ -28,11 +28,13 @@ import sys
 
 from teenytiny_token import TokenType, Token
 from lexer import Lexer
+from emitter import Emitter
 
 
 class Parser:
-    def __init__(self, lexer: Lexer):
+    def __init__(self, lexer: Lexer, emitter: Emitter):
         self.lexer = lexer
+        self.emitter = emitter
 
         self.symbols = set()  # variables declared so far
         self.labels_declared = set()  # labels declared so far
@@ -72,7 +74,8 @@ class Parser:
 
     # program ::= {statement}
     def program(self):
-        print("PROGRAM")
+        self.emitter.header_line("#include <stdio.h>")
+        self.emitter.header_line("int main(void) {")
 
         # Skip newlines at the beginning
         while self.check_token(TokenType.NEWLINE):
@@ -82,6 +85,9 @@ class Parser:
         while not self.check_token(TokenType.EOF):
             self.statement()
 
+        self.emitter.emit_line("return 0;")
+        self.emitter.emit_line("}")
+
         # Check that all labels referenced in GOTO are declared
         for label in self.labels_goto:
             if label not in self.labels_declared:
@@ -90,76 +96,102 @@ class Parser:
     def statement(self):
         # "PRINT" (expression | string) newline
         if self.check_token(TokenType.PRINT):
-            print("STATEMENT-PRINT")
             self.next_token()
+
             if self.check_token(TokenType.STRING):
+                # Print a string
+                self.emitter.emit_line(f'printf("{self.current_token.text}");')
                 self.next_token()
             else:
+                # Print the expression result as a float
+                self.emitter.emit(f'printf("%.2f", (float)(')
                 self.expression()
+                self.emitter.emit_line("));")
 
         # "IF" comparison "THEN" newline {statement} "ENDIF" newline
         elif self.check_token(TokenType.IF):
-            print("STATEMENT-IF")
             self.next_token()
+            self.emitter.emit("if(")
             self.comparison()
+
             self.match(TokenType.THEN)
             self.newline()
+            self.emitter.emit_line("){")
+
             while not self.check_token(TokenType.ENDIF):
                 self.statement()
+
             self.match(TokenType.ENDIF)
+            self.emitter.emit_line("}")
 
         # "WHILE" comparison "REPEAT" newline {statement newline} "ENDWHILE" newline
         elif self.check_token(TokenType.WHILE):
-            print("STATEMENT-WHILE")
             self.next_token()
+            self.emitter.emit("while(")
             self.comparison()
+
             self.match(TokenType.REPEAT)
             self.newline()
+            self.emitter.emit_line("){")
+
             while not self.check_token(TokenType.ENDWHILE):
                 self.statement()
+
             self.match(TokenType.ENDWHILE)
+            self.emitter.emit_line("}")
 
         # "LABEL" identifier newline
         elif self.check_token(TokenType.LABEL):
-            print("STATEMENT-LABEL")
             self.next_token()
 
             # make sure the label doesn't already exist
             if self.current_token.text in self.labels_declared:
                 self.abort(f"Label already exists: {self.current_token.text}")
 
+            self.emitter.emit_line(f"{self.current_token.text}:")
             self.match(TokenType.IDENTIFIER)
 
         # "GOTO" identifier newline
         elif self.check_token(TokenType.GOTO):
-            print("STATEMENT-GOTO")
             self.next_token()
             self.labels_goto.add(self.current_token.text)
+
+            self.emitter.emit_line(f"goto {self.current_token.text};")
             self.match(TokenType.IDENTIFIER)
 
         # "LET" identifier "=" expression newline
         elif self.check_token(TokenType.LET):
-            print("STATEMENT-LET")
             self.next_token()
 
             # Declare the variable if not exist in symbols table
             if self.current_token.text not in self.symbols:
                 self.symbols.add(self.current_token.text)
+                self.emitter.header_line(f"float {self.current_token.text};")
 
+            self.emitter.emit(f"{self.current_token.text} = ")
             self.match(TokenType.IDENTIFIER)
             self.match(TokenType.EQ)
 
             self.expression()
+            self.emitter.emit_line(";")
 
         # "INPUT" identifier newline
         elif self.check_token(TokenType.INPUT):
-            print("STATEMENT-INPUT")
             self.next_token()
 
             # Declare the variable if not exist in symbols table
             if self.current_token.text not in self.symbols:
                 self.symbols.add(self.current_token.text)
+                self.emitter.header_line(f"float {self.current_token.text};")
 
+            # Emit scanf but and input validation code
+            # If invalid, set the value to 0 and reset the input
+            self.emitter.emit_line(
+                f"if(" + f'scanf("%f", &{self.current_token.text})' + " == 0){"
+            )
+            self.emitter.emit_line(f"{self.current_token.text} = 0;")
+            self.emitter.emit_line('scanf("%*s");')
+            self.emitter.emit_line("}")
             self.match(TokenType.IDENTIFIER)
 
         else:
@@ -170,8 +202,6 @@ class Parser:
         self.newline()
 
     def newline(self):
-        print("NEWLINE")
-
         # Require at least 1 newline. Allow extra newlines
         self.match(TokenType.NEWLINE)
         while self.check_token(TokenType.NEWLINE):
@@ -179,18 +209,21 @@ class Parser:
 
     # comparison ::= expression (("==" | "!=" | ">" | ">=" | "<" | "<=") expression)+
     def comparison(self):
-        print("COMPARISON")
         self.expression()
+
         if self.is_comparison_operator():
+            self.emitter.emit(self.current_token.text)
             self.next_token()
             self.expression()
         else:
             self.abort(f"Expected comparison operator at {self.current_token.text}")
+
         while self.is_comparison_operator():
+            self.emitter.emit(self.current_token.text)
             self.next_token()
             self.expression()
 
-    def is_comparison_operator(self):
+    def is_comparison_operator(self) -> bool:
         return (
             self.check_token(TokenType.GT)
             or self.check_token(TokenType.GTEQ)
@@ -202,31 +235,31 @@ class Parser:
 
     # expression ::= term {( "-" | "+" ) term}
     def expression(self):
-        print("EXPRESSION")
         self.term()
         while self.check_token(TokenType.PLUS) or self.check_token(TokenType.MINUS):
+            self.emitter.emit(self.current_token.text)
             self.next_token()
             self.term()
 
     # term ::= unary {( "/" | "*" ) unary}
     def term(self):
-        print("TERM")
         self.unary()
         while self.check_token(TokenType.ASTERISK) or self.check_token(TokenType.SLASH):
+            self.emitter.emit(self.current_token.text)
             self.next_token()
             self.unary()
 
     # unary ::= ["+" | "-"] primary
     def unary(self):
-        print("UNARY")
         if self.check_token(TokenType.PLUS) or self.check_token(TokenType.MINUS):
+            self.emitter.emit(self.current_token.text)
             self.next_token()
         self.primary()
 
     # primary ::= number | identifier
     def primary(self):
-        print(f"PRIMARY ({self.current_token.text})")
         if self.check_token(TokenType.NUMBER):
+            self.emitter.emit(self.current_token.text)
             self.next_token()
         elif self.check_token(TokenType.IDENTIFIER):
             # Ensure the variable already declared
@@ -234,6 +267,7 @@ class Parser:
                 self.abort(
                     f"Referencing variable before assignment: {self.current_token.text}"
                 )
+            self.emitter.emit(self.current_token.text)
             self.next_token()
         else:
             self.abort(f"Unexpected token at {self.current_token.text}")
